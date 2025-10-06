@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mouse Trailing Particles — Demo</title>
+  <style>
+    html,body{height:100%;margin:0;background:#0b1020;color:#e6eef8;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Helvetica,Arial}
+    canvas{display:block;width:100%;height:100vh}
+    .ui {
+      position:fixed;right:12px;top:12px;background:rgba(10,12,20,0.6);backdrop-filter:blur(6px);padding:10px;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.5);z-index:20;
+      font-size:13px;line-height:1.4;color:#dce9ff;min-width:200px
+    }
+    .ui label{display:flex;justify-content:space-between;gap:8px;align-items:center}
+    .ui input[type=range]{width:100%}
+    .ui .row{margin-bottom:8px}
+    .credit{position:fixed;left:12px;bottom:12px;color:#8fa6d8;font-size:13px}
+    button{background:#1b2436;border:0;padding:6px 8px;border-radius:6px;color:#dfe9ff;cursor:pointer}
+    a{color:#9fc2ff}
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div class="ui" id="ui">
+    <div class="row"><label>Particles <span id="countLabel">500</span></label>
+      <input id="count" type="range" min="50" max="2000" step="10" value="500"></div>
+    <div class="row"><label>Size <span id="sizeLabel">6</span></label>
+      <input id="size" type="range" min="1" max="20" step="1" value="6"></div>
+    <div class="row"><label>Spread <span id="spreadLabel">0.35</span></label>
+      <input id="spread" type="range" min="0" max="1" step="0.01" value="0.35"></div>
+    <div class="row"><label>Trail Fade <span id="fadeLabel">0.18</span></label>
+      <input id="fade" type="range" min="0" max="1" step="0.01" value="0.18"></div>
+    <div style="display:flex;gap:8px;justify-content:space-between"><button id="pauseBtn">Pause</button><button id="clearBtn">Clear</button></div>
+  </div>
+
+  <div class="credit">Mouse trail particles — adjust controls on the top-right</div>
+
+  <script>
+    // -----------------------------
+    // Config & helpers
+    // -----------------------------
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d', {alpha: true});
+
+    let DPR = Math.max(1, window.devicePixelRatio || 1);
+    function resize(){
+      DPR = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.floor(innerWidth * DPR);
+      canvas.height = Math.floor(innerHeight * DPR);
+      canvas.style.width = innerWidth + 'px';
+      canvas.style.height = innerHeight + 'px';
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function rand(min, max){ return Math.random() * (max - min) + min }
+    function lerp(a,b,t){ return a + (b-a)*t }
+
+    // -----------------------------
+    // Particle System
+    // -----------------------------
+    class Particle{
+      constructor(){ this.reset(true) }
+      reset(initial=false){
+        this.x = -9999; this.y = -9999;
+        this.vx = 0; this.vy = 0;
+        this.life = 0; this.maxLife = 0;
+        this.size = 4; this.hue = 200; this.alpha = 0;
+        if(initial) this.active = false; else this.active = false;
+      }
+      init(x,y,dir,spread,speed,size,hue){
+        this.x = x; this.y = y;
+        const ang = dir + rand(-spread, spread);
+        const spd = speed * rand(0.6, 1.4);
+        this.vx = Math.cos(ang) * spd;
+        this.vy = Math.sin(ang) * spd;
+        this.size = size * rand(0.6,1.2);
+        this.life = 0;
+        this.maxLife = rand(40, 110);
+        this.hue = hue + rand(-30,30);
+        this.alpha = 1;
+        this.active = true;
+      }
+      update(){
+        if(!this.active) return false;
+        this.x += this.vx;
+        this.y += this.vy;
+        // air drag
+        this.vx *= 0.98; this.vy *= 0.98;
+        // gravity subtle
+        this.vy += 0.02;
+        this.life++;
+        // fade
+        this.alpha = Math.max(0, 1 - this.life / this.maxLife);
+        if(this.life >= this.maxLife){ this.active = false; return false }
+        return true;
+      }
+      draw(ctx){
+        if(!this.active) return;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+        ctx.fillStyle = `hsla(${this.hue}, 95%, 55%, ${this.alpha})`;
+        ctx.fill();
+      }
+    }
+
+    class ParticlePool{
+      constructor(maxCount){
+        this.pool = new Array(maxCount);
+        for(let i=0;i<maxCount;i++) this.pool[i] = new Particle();
+        this.maxCount = maxCount;
+        this.live = 0;
+      }
+      spawn(x,y,dir,spread,speed,size,hue){
+        for(let i=0;i<this.maxCount;i++){
+          const p = this.pool[i];
+          if(!p.active){ p.init(x,y,dir,spread,speed,size,hue); this.live++; break }
+        }
+      }
+      updateAndDraw(ctx){
+        let live = 0;
+        for(let i=0;i<this.maxCount;i++){
+          const p = this.pool[i];
+          if(p.active){
+            const alive = p.update();
+            if(alive){ p.draw(ctx); live++ } else { p.active = false }
+          }
+        }
+        this.live = live;
+      }
+      clear(){ for(const p of this.pool) p.reset() }
+    }
+
+    // -----------------------------
+    // Controller & input
+    // -----------------------------
+    const settings = {
+      particleCount: 500,
+      baseSize: 6,
+      spread: 0.35, // radians
+      fade: 0.18
+    };
+
+    // UI bindings
+    const ui = {
+      count: document.getElementById('count'), countLabel: document.getElementById('countLabel'),
+      size: document.getElementById('size'), sizeLabel: document.getElementById('sizeLabel'),
+      spread: document.getElementById('spread'), spreadLabel: document.getElementById('spreadLabel'),
+      fade: document.getElementById('fade'), fadeLabel: document.getElementById('fadeLabel'),
+      pauseBtn: document.getElementById('pauseBtn'), clearBtn: document.getElementById('clearBtn')
+    };
+
+    function applyUI(){
+      settings.particleCount = parseInt(ui.count.value, 10);
+      settings.baseSize = parseFloat(ui.size.value);
+      settings.spread = parseFloat(ui.spread.value) * Math.PI; // scale to radians
+      settings.fade = parseFloat(ui.fade.value);
+      ui.countLabel.textContent = settings.particleCount;
+      ui.sizeLabel.textContent = settings.baseSize;
+      ui.spreadLabel.textContent = (settings.spread / Math.PI).toFixed(2);
+      ui.fadeLabel.textContent = settings.fade;
+      // re-create pool if needed
+      if(pool.maxCount !== settings.particleCount){ pool = new ParticlePool(settings.particleCount) }
+    }
+
+    ui.count.addEventListener('input', applyUI);
+    ui.size.addEventListener('input', applyUI);
+    ui.spread.addEventListener('input', applyUI);
+    ui.fade.addEventListener('input', applyUI);
+
+    ui.pauseBtn.addEventListener('click', ()=>{ running = !running; ui.pauseBtn.textContent = running ? 'Pause' : 'Resume' });
+    ui.clearBtn.addEventListener('click', ()=>{ pool.clear(); ctx.clearRect(0,0,canvas.width,canvas.height) });
+
+    // mouse / pointer
+    const pointer = {x: innerWidth/2, y: innerHeight/2, px: innerWidth/2, py: innerHeight/2, down:false}
+
+    function onPointerMove(e){
+      const p = e.touches ? e.touches[0] : e;
+      pointer.x = p.clientX; pointer.y = p.clientY;
+    }
+    function onPointerDown(e){ pointer.down = true; onPointerMove(e) }
+    function onPointerUp(e){ pointer.down = false }
+
+    window.addEventListener('mousemove', onPointerMove, {passive:true});
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('touchstart', onPointerDown, {passive:true});
+    window.addEventListener('touchmove', onPointerMove, {passive:true});
+    window.addEventListener('touchend', onPointerUp, {passive:true});
+
+    // -----------------------------
+    // Main loop
+    // -----------------------------
+
+    // initial pool
+    let pool = new ParticlePool(settings.particleCount);
+
+    let running = true;
+    let lastTime = performance.now();
+
+    function frame(t){
+      const dt = (t - lastTime) / 1000; lastTime = t;
+      if(!running){ requestAnimationFrame(frame); return }
+
+      // fade canvas slightly to create trails
+      ctx.fillStyle = `rgba(6,8,14,${settings.fade})`;
+      ctx.fillRect(0,0,canvas.width/DPR,canvas.height/DPR);
+
+      // calculate mouse movement direction & speed
+      const dx = pointer.x - pointer.px; const dy = pointer.y - pointer.py;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      const dir = Math.atan2(dy, dx);
+      // spawn rate based on speed
+      const speed = Math.min(80, dist*1.2 + 1);
+
+      // spawn a handful of particles per frame if moving
+      if(dist > 0.5){
+        // number proportional to speed
+        const toSpawn = Math.min(30, Math.max(1, Math.floor(dist * 0.6)));
+        for(let i=0;i<toSpawn;i++){
+          // jitter spawn along a short line between old and new pointer (gives continuous trail)
+          const tpos = Math.random();
+          const sx = lerp(pointer.px, pointer.x, tpos) + rand(-2,2);
+          const sy = lerp(pointer.py, pointer.y, tpos) + rand(-2,2);
+          const hue = 190 + (Math.sin((sx+sy + performance.now()*0.002)/80) * 40);
+          pool.spawn(sx, sy, dir, settings.spread, speed * (0.5 + Math.random()*0.9), settings.baseSize, hue);
+        }
+      } else if(pointer.down){
+        // when holding still, emit a soft puff
+        for(let i=0;i<2;i++){
+          const hue = 200 + rand(-30,30);
+          pool.spawn(pointer.x + rand(-4,4), pointer.y + rand(-4,4), rand(0,Math.PI*2), settings.spread, 0.6, settings.baseSize * 0.9, hue);
+        }
+      }
+
+      pool.updateAndDraw(ctx);
+
+      // small UI overlay for live count
+      ctx.save();
+      ctx.font = '12px Inter, Arial';
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillText('Live: ' + pool.live, 12, 18);
+      ctx.restore();
+
+      pointer.px = lerp(pointer.px, pointer.x, 0.6);
+      pointer.py = lerp(pointer.py, pointer.y, 0.6);
+
+      requestAnimationFrame(frame);
+    }
+
+    // initial clear to dark
+    ctx.fillStyle = '#06080E';
+    ctx.fillRect(0,0,canvas.width/DPR,canvas.height/DPR);
+    applyUI();
+    requestAnimationFrame(frame);
+
+    // accessibility: pause/resume with space
+    window.addEventListener('keydown', (e)=>{ if(e.code === 'Space'){ e.preventDefault(); running = !running; ui.pauseBtn.textContent = running ? 'Pause' : 'Resume' } });
+
+    // performance note: you can lower particle count or increase fade to reduce GPU load
+  </script>
+</body>
+</html>
