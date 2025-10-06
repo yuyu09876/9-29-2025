@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Space Dodger — ミニゲーム</title>
+  <style>
+    :root{--bg:#050814;--player:#66e0ff;--ob:#ff6b6b;--panel:rgba(255,255,255,0.06)}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,'Hiragino Kaku Gothic ProN',Meiryo, sans-serif;background:var(--bg);color:#e6eef8}
+    .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:20px}
+    .card{width:960px;max-width:100%;background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));border-radius:12px;padding:18px;box-shadow:0 6px 30px rgba(2,6,23,0.6);display:grid;grid-template-columns:1fr 300px;gap:12px}
+    canvas{background:linear-gradient(180deg,#071025 0%, #02111a 100%);border-radius:8px;display:block;width:100%;height:600px}
+    .panel{padding:12px;border-radius:8px;background:var(--panel);min-height:600px}
+    h1{margin:0 0 10px 0;font-size:20px}
+    .controls{display:flex;flex-direction:column;gap:8px}
+    button{padding:10px 12px;border-radius:8px;border:0;background:#1b73ff;color:white;font-weight:600;cursor:pointer}
+    .small{font-size:13px;color:#cfe9ff}
+    .row{display:flex;gap:8px;align-items:center}
+    .score{font-size:36px;font-weight:700}
+    .muted{opacity:0.7}
+    .hint{font-size:13px}
+    .footer{margin-top:12px;font-size:13px;color:#9fbadd}
+    @media (max-width:880px){.card{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div>
+        <canvas id="game"></canvas>
+      </div>
+      <aside class="panel">
+        <h1>Space Dodger</h1>
+        <div class="small muted">目的: 隕石をよけてハイスコアを目指そう</div>
+
+        <div style="margin-top:12px" class="row">
+          <div>
+            <div class="score" id="score">0</div>
+            <div class="small">距離 / スコア</div>
+          </div>
+        </div>
+
+        <div style="margin-top:12px" class="controls">
+          <div class="row"><button id="startBtn">スタート</button><button id="restartBtn">リスタート</button></div>
+          <div class="hint">操作方法: ← → / A D で移動、スペースで一時停止</div>
+          <div class="hint">タッチ: 画面左右をタップして移動</div>
+        </div>
+
+        <hr style="border:0;border-top:1px solid rgba(255,255,255,0.04);margin:12px 0">
+        <div class="muted">進行</div>
+        <ul>
+          <li>時間経過でスピードと出現数が増加</li>
+          <li>アイテム取得で一時的に無敵（青い星）</li>
+        </ul>
+
+        <div class="footer">作: ChatGPT — シンプルなHTML/JSの1ファイルゲーム</div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    // シンプルな『避けゲー』 — Canvasベース
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    let W = 800, H = 600;
+    function resize(){
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.min(1200, Math.max(480, rect.width * devicePixelRatio));
+      canvas.height = Math.min(900, Math.max(360, rect.height * devicePixelRatio));
+      W = canvas.width; H = canvas.height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // ゲーム変数
+    const player = {x:W/2, y:H-80, w:48, h:48, speed:8, color:'#66e0ff', vx:0, invincible:0};
+    let obstacles = [];
+    let items = [];
+    let lastSpawn = 0, spawnInterval = 900; // ms
+    let lastItemSpawn = 0, itemInterval = 7000;
+    let score = 0; let running = false; let paused = false; let lastTime = 0; let difficulty = 0.0006;
+
+    const scoreEl = document.getElementById('score');
+    document.getElementById('startBtn').addEventListener('click', startGame);
+    document.getElementById('restartBtn').addEventListener('click', resetGame);
+
+    function startGame(){ if(running) return; running=true; paused=false; lastTime = performance.now(); requestAnimationFrame(loop); }
+    function resetGame(){ running=false; obstacles=[]; items=[]; score=0; scoreEl.textContent = score; player.x = W/2; player.invincible = 0; spawnInterval = 900; lastSpawn = 0; }
+
+    // 入力
+    const keys = {};
+    window.addEventListener('keydown', e=>{ keys[e.key]=true; if(e.key === ' '){ paused = !paused; e.preventDefault(); } });
+    window.addEventListener('keyup', e=>{ keys[e.key]=false; });
+
+    // タッチ入力: 画面左右で移動
+    canvas.addEventListener('touchstart', e=>{
+      e.preventDefault(); const t = e.touches[0]; const r = canvas.getBoundingClientRect();
+      const x = (t.clientX - r.left)/r.width * W;
+      if(x < W/2) keys['leftTouch']=true; else keys['rightTouch']=true;
+    }, {passive:false});
+    canvas.addEventListener('touchend', e=>{ keys['leftTouch']=false; keys['rightTouch']=false; });
+
+    // スポーン
+    function spawnObstacle(){
+      const size = 18 + Math.random()*36;
+      const x = Math.random()*(W - size - 40) + 20;
+      const speed = 1.2 + Math.random()*2.2 + Math.max(0, score/1500);
+      obstacles.push({x, y:-size, w:size, h:size, speed, rot:Math.random()*Math.PI});
+    }
+    function spawnItem(){
+      const x = 40 + Math.random()*(W-80);
+      items.push({x, y:-20, r:14, speed:1.5 + Math.random()*1.2, type:'star'});
+    }
+
+    // 衝突判定
+    function rectIntersect(a,b){ return !(a.x+b.w < a.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h); }
+    function collideRect(a,b){ return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h); }
+
+    function loop(ts){
+      if(!running) return;
+      if(paused){ drawPaused(); requestAnimationFrame(loop); return; }
+      const dt = Math.min(40, ts - lastTime); lastTime = ts;
+      // update
+      handleInput();
+      // spawn logic
+      if(ts - lastSpawn > spawnInterval){ spawnObstacle(); lastSpawn = ts; spawnInterval = Math.max(300, spawnInterval - 8); }
+      if(ts - lastItemSpawn > itemInterval){ if(Math.random()<0.45) spawnItem(); lastItemSpawn = ts; }
+
+      // move obstacles
+      for(let i=obstacles.length-1;i>=0;i--){
+        const o = obstacles[i]; o.y += o.speed * (1 + difficulty*score*0.2) * (dt/16);
+        o.rot += 0.02;
+        if(o.y > H + 50) { obstacles.splice(i,1); score += 10; }
+      }
+      // move items
+      for(let i=items.length-1;i>=0;i--){ const it = items[i]; it.y += it.speed * (dt/16); if(it.y > H+30) items.splice(i,1); }
+
+      // player invincible timer
+      if(player.invincible>0) player.invincible = Math.max(0, player.invincible - dt);
+
+      // collisions
+      for(let i=obstacles.length-1;i>=0;i--){ const o = obstacles[i]; if(collideRect({x:player.x - player.w/2, y:player.y - player.h/2, w:player.w, h:player.h}, {x:o.x, y:o.y, w:o.w, h:o.h})){
+          if(player.invincible<=0){ gameOver(); return; } else { obstacles.splice(i,1); score += 40; }
+        }}
+      for(let i=items.length-1;i>=0;i--){ const it = items[i]; const pr = {x:player.x - player.w/2, y:player.y - player.h/2, w:player.w, h:player.h};
+        if(collideRect(pr, {x:it.x - it.r, y:it.y - it.r, w:it.r*2, h:it.r*2})){
+          if(it.type==='star'){ player.invincible = 3500; }
+          items.splice(i,1); score += 80;
+        }
+      }
+
+      // scoring: small increment every frame
+      score += Math.floor(dt * 0.03);
+      scoreEl.textContent = Math.max(0, Math.floor(score));
+
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    function handleInput(){
+      const move = (keys['ArrowLeft'] || keys['a'] || keys['A'] || keys['leftTouch']) ? -1 : (keys['ArrowRight'] || keys['d'] || keys['D'] || keys['rightTouch']) ? 1 : 0;
+      player.x += move * player.speed * (canvas.width/800);
+      // clamp
+      player.x = Math.max(player.w/2 + 6, Math.min(W - player.w/2 - 6, player.x));
+    }
+
+    function draw(){
+      // clear
+      ctx.clearRect(0,0,W,H);
+      // starfield background
+      for(let i=0;i<70;i++){ const x = (i*97)%W; const y = (i*53 + (score/10))%H; ctx.fillStyle = 'rgba(255,255,255,'+ (0.03 + ((i%7)/70)) +')'; ctx.fillRect(x, y, 1, 1); }
+
+      // obstacles
+      obstacles.forEach(o=>{
+        ctx.save(); ctx.translate(o.x + o.w/2, o.y + o.h/2); ctx.rotate(o.rot);
+        ctx.fillStyle = '#ff6b6b'; ctx.beginPath(); ctx.moveTo(-o.w/2, -o.h/2); ctx.lineTo(o.w/2, -o.h/2); ctx.lineTo(0,o.h/2); ctx.closePath(); ctx.fill();
+        ctx.restore();
+      });
+
+      // items
+      items.forEach(it=>{
+        ctx.save(); ctx.beginPath(); ctx.translate(it.x, it.y);
+        ctx.moveTo(0,-it.r); for(let a=0;a<5;a++){ ctx.rotate(Math.PI/5); ctx.lineTo(0, -it.r*0.5); ctx.rotate(Math.PI/5); ctx.lineTo(0,-it.r); }
+        ctx.fillStyle = '#6bf'; ctx.fill(); ctx.restore();
+      });
+
+      // player
+      ctx.save(); ctx.translate(player.x, player.y);
+      if(player.invincible>0){ const t = (player.invincible/200) % 1; ctx.shadowBlur = 18; ctx.shadowColor = 'rgba(102,224,255,0.9)'; }
+      ctx.fillStyle = player.color; ctx.beginPath(); ctx.moveTo(-player.w/2, player.h/2); ctx.lineTo(0,-player.h/2); ctx.lineTo(player.w/2, player.h/2); ctx.closePath(); ctx.fill(); ctx.restore();
+
+      // HUD
+      ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(10,10,160,44); ctx.fillStyle = '#cfe9ff'; ctx.font = '14px system-ui,Meiryo'; ctx.fillText('Score: '+Math.max(0,Math.floor(score)), 20, 34);
+
+      if(paused){ drawPausedOverlay(); }
+    }
+
+    function drawPaused(){ ctx.save(); ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fillRect(0,0,W,H); ctx.fillStyle='#fff'; ctx.font='28px system-ui,Meiryo'; ctx.fillText('PAUSED', W/2 - 60, H/2); ctx.restore(); }
+    function drawPausedOverlay(){ ctx.save(); ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(0,0,W,H); ctx.fillStyle='#fff'; ctx.font='32px system-ui,Meiryo'; ctx.fillText('PAUSED', W/2 - 56, H/2 - 6); ctx.restore(); }
+
+    function gameOver(){ running=false; ctx.save(); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,W,H); ctx.fillStyle='#ffb3b3'; ctx.font='36px system-ui,Meiryo'; ctx.fillText('GAME OVER', W/2 - 120, H/2 - 10);
+      ctx.font='18px system-ui,Meiryo'; ctx.fillStyle='#fff'; ctx.fillText('スコア: '+Math.floor(score), W/2 - 50, H/2 + 22);
+      ctx.restore();
+    }
+
+    // 自動リサイズ対応の初期化
+    (function init(){
+      // adjust player position according to canvas pixel ratio
+      player.x = W/2; player.y = H - 90;
+      // setup a lightweight spawn timer
+      lastSpawn = performance.now(); lastItemSpawn = performance.now();
+      // start paused; user clicks start
+      resetGame();
+    })();
+
+  </script>
+</body>
+</html>
